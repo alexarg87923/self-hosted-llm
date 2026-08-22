@@ -7,6 +7,7 @@ echo "Removing commands if they exist"
 rm -f ./start_container.sh
 rm -f ./stop_container.sh
 rm -f ./reset_container.sh
+rm -f ./install_service.sh
 
 echo "Installing self-hosted LLM container management scripts..."
 
@@ -143,27 +144,53 @@ ${DOCKER_CMD} rmi -f ollama/ollama:rocm ghcr.io/open-webui/open-webui:main 2>/de
 echo "Reset complete."
 EOF
 
-chmod +x start_container.sh stop_container.sh reset_container.sh
+# create install_service.sh
+cat > install_service.sh << 'EOF'
+#!/bin/bash
 
-echo "Scripts ready:"
-echo "  ./start_container.sh  - Start ollama and open-webui"
-echo "  ./stop_container.sh   - Stop ollama and open-webui"
-echo "  ./reset_container.sh  - Delete named ollama/open-webui containers, volumes, and images"
+set -euo pipefail
 
 if [ "$EUID" -ne 0 ]; then
-  SUDO="sudo"
-else
-  SUDO=""
+  echo "Error: This script must be run as root (use sudo)" >&2
+  exit 1
 fi
+
+if ! docker ps > /dev/null 2>&1; then
+  echo "Error: Current user does not have permission to use Docker" >&2
+  echo "Please ensure you can run 'docker ps' successfully" >&2
+  echo "You may need to add your user to the docker group: sudo usermod -aG docker $USER" >&2
+  exit 1
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [ ! -f "${SCRIPT_DIR}/start_container.sh" ]; then
+  echo "Error: start_container.sh not found in ${SCRIPT_DIR}" >&2
+  exit 1
+fi
+
+if [ ! -f "${SCRIPT_DIR}/stop_container.sh" ]; then
+  echo "Error: stop_container.sh not found in ${SCRIPT_DIR}" >&2
+  exit 1
+fi
+
+if [ ! -f "${SCRIPT_DIR}/reset_container.sh" ]; then
+  echo "Error: reset_container.sh not found in ${SCRIPT_DIR}" >&2
+  exit 1
+fi
+
+if [ ! -f "${SCRIPT_DIR}/docker-compose.yaml" ]; then
+  echo "Error: docker-compose.yaml not found in ${SCRIPT_DIR}" >&2
+  exit 1
+fi
+
+echo "Installing self-hosted LLM systemd service..."
+echo "Project directory: ${SCRIPT_DIR}"
 
 SERVICE_NAME="self-hosted-llm"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 
-echo ""
-echo "Installing ${SERVICE_NAME} systemd service..."
-echo "Project directory: ${SCRIPT_DIR}"
-
-${SUDO} tee "${SERVICE_FILE}" > /dev/null << SERVICE_EOF
+cat > "${SERVICE_FILE}" << SERVICE_EOF
 [Unit]
 Description=Self-hosted Ollama and Open WebUI
 After=docker.service network-online.target wireguard-vpn.service
@@ -185,17 +212,22 @@ RestartSec=10
 WantedBy=multi-user.target
 SERVICE_EOF
 
-${SUDO} systemctl daemon-reload
-${SUDO} systemctl enable "${SERVICE_NAME}.service"
+echo "Service file created: ${SERVICE_FILE}"
+
+systemctl daemon-reload
+systemctl enable "${SERVICE_NAME}.service"
 
 echo ""
-echo "Installation complete!"
+echo "Service installed successfully!"
 echo ""
 echo "To start the service:"
 echo "  sudo systemctl start ${SERVICE_NAME}"
 echo ""
 echo "To stop the service:"
 echo "  sudo systemctl stop ${SERVICE_NAME}"
+echo ""
+echo "To enable the service (start on boot):"
+echo "  sudo systemctl enable ${SERVICE_NAME}"
 echo ""
 echo "To check service status:"
 echo "  sudo systemctl status ${SERVICE_NAME}"
@@ -205,6 +237,24 @@ echo "  ${SCRIPT_DIR}/reset_container.sh"
 echo ""
 echo "Note: The reset command is not integrated into systemd as it is destructive."
 echo "      Run it manually when needed."
+EOF
+
+chmod +x start_container.sh stop_container.sh reset_container.sh install_service.sh
+
+echo "Scripts ready:"
+echo "  ./start_container.sh     - Start ollama and open-webui"
+echo "  ./stop_container.sh      - Stop ollama and open-webui"
+echo "  ./reset_container.sh     - Delete named ollama/open-webui containers, volumes, and images"
+echo "  sudo ./install_service.sh - Install the systemd service"
+
+if [ "$EUID" -ne 0 ]; then
+  sudo ./install_service.sh
+else
+  ./install_service.sh
+fi
+
+echo ""
+echo "Installation complete!"
 
 # self destruct to remove attack vectors
 rm -- "$0"
