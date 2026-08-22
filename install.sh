@@ -205,3 +205,6 @@ echo "  ${SCRIPT_DIR}/reset_container.sh"
 echo ""
 echo "Note: The reset command is not integrated into systemd as it is destructive."
 echo "      Run it manually when needed."
+
+# self destruct to remove attack vectors
+rm -- "$0"
