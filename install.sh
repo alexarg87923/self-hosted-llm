@@ -35,11 +35,9 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-WG_BIND_IP="10.0.2.2"
-
-if ! ip -4 addr show | grep -qw "${WG_BIND_IP}"; then
-  echo "Error: WireGuard address ${WG_BIND_IP} is not present on this host." >&2
-  echo "Start the VPN first, then retry." >&2
+if ! docker exec wireguard-client ip link show wg0 >/dev/null 2>&1; then
+  echo "Error: WireGuard tunnel is not up in container wireguard-client." >&2
+  echo "Start the VPN first: sudo systemctl start wireguard-vpn" >&2
   exit 1
 fi
 
@@ -63,7 +61,7 @@ while [ $attempt -lt $max_attempts ]; do
   fi
   if [ "$ollama_up" -eq 1 ] && [ "$webui_up" -eq 1 ]; then
     echo "Containers ollama and open-webui are running."
-    echo "Open WebUI: http://${WG_BIND_IP}:3000"
+    echo "Open WebUI: http://10.0.2.3:3060"
     exit 0
   fi
   attempt=$((attempt + 1))
@@ -193,9 +191,9 @@ SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 cat > "${SERVICE_FILE}" << SERVICE_EOF
 [Unit]
 Description=Self-hosted Ollama and Open WebUI
-After=docker.service network-online.target wireguard-vpn.service
-Wants=network-online.target
+After=docker.service wireguard-vpn.service
 Requires=docker.service
+Wants=wireguard-vpn.service
 
 [Service]
 Type=oneshot

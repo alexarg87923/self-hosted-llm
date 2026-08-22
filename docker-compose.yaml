@@ -20,9 +20,9 @@ services:
     container_name: open-webui
     restart: always
     ports:
-      # Bind ONLY to the WireGuard interface IP (e.g., 10.0.2.2)
-      # This prevents local network users from bypassing the proxy
-      - "10.0.2.2:3000:8080"
+      # Listen on all host interfaces. WireGuard DNATs 10.0.2.3:3060
+      # (BACKEND_PORT) here; the host has no 10.0.2.x address.
+      - "0.0.0.0:3060:8080"
     environment:
       - 'OLLAMA_BASE_URL=http://ollama:11434'
     volumes:
