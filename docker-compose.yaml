@@ -1,3 +1,5 @@
+name: self-hosted-llm
+
 services:
   ollama:
     image: ollama/ollama:rocm
@@ -10,22 +12,32 @@ services:
       - /dev/dri:/dev/dri
     volumes:
       - ollama_data:/root/.ollama
+    networks:
+      - llm
 
   open-webui:
     image: ghcr.io/open-webui/open-webui:main
     container_name: open-webui
     restart: always
     ports:
-      # Bind ONLY to the WireGuard interface IP (e.g., 10.0.0.2)
+      # Bind ONLY to the WireGuard interface IP (e.g., 10.0.2.2)
       # This prevents local network users from bypassing the proxy
-      - "10.0.0.2:3000:8080"
+      - "10.0.2.2:3000:8080"
     environment:
       - 'OLLAMA_BASE_URL=http://ollama:11434'
     volumes:
       - open-webui_data:/app/backend/data
     depends_on:
       - ollama
+    networks:
+      - llm
 
 volumes:
   ollama_data:
+    name: ollama_data
   open-webui_data:
+    name: open-webui_data
+
+networks:
+  llm:
+    name: self-hosted-llm
