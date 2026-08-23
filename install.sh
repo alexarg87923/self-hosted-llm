@@ -296,14 +296,22 @@ echo "Project directory: ${SCRIPT_DIR}"
 SERVICE_NAME="self-hosted-llm"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 
-AFTER_LINE="After=docker.service"
+WAIT_UNITS=""
+IFS=',' read -ra WAIT_FOR_PARTS <<< "${WAIT_FOR:-}"
+for part in "${WAIT_FOR_PARTS[@]}"; do
+  unit="${part#"${part%%[![:space:]]*}"}"
+  unit="${unit%"${unit##*[![:space:]]}"}"
+  [ -z "$unit" ] && continue
+  WAIT_UNITS="${WAIT_UNITS} ${unit}"
+done
+
+AFTER_LINE="After=docker.service${WAIT_UNITS}"
 WANTS_LINE=""
-if [ "${WAIT_FOR_WIREGUARD:-true}" != "false" ] && [ "${WAIT_FOR_WIREGUARD:-true}" != "0" ]; then
-  AFTER_LINE="After=docker.service wireguard-vpn.service"
-  WANTS_LINE="Wants=wireguard-vpn.service"
-  echo "WAIT_FOR_WIREGUARD is on: unit will wait for wireguard-vpn.service"
+if [ -n "${WAIT_UNITS}" ]; then
+  WANTS_LINE="Wants=${WAIT_UNITS# }"
+  echo "systemd will wait for:${WAIT_UNITS}"
 else
-  echo "WAIT_FOR_WIREGUARD is off: unit will not wait for wireguard-vpn.service"
+  echo "WAIT_FOR is empty: unit will wait for docker.service only"
 fi
 
 cat > "${SERVICE_FILE}" << SERVICE_EOF
