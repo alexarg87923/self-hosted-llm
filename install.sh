@@ -2,6 +2,11 @@
 
 set -euo pipefail
 
+if [ "$EUID" -ne 0 ]; then
+  echo "Error: This script must be run as root (use sudo)" >&2
+  exit 1
+fi
+
 echo "Removing commands if they exist"
 
 rm -f ./start_container.sh
@@ -21,19 +26,54 @@ if [ ! -f "${SCRIPT_DIR}/docker-compose.yaml" ]; then
   exit 1
 fi
 
+if [ ! -f "${SCRIPT_DIR}/.env" ]; then
+  if [ -f "${SCRIPT_DIR}/.env.EXAMPLE" ]; then
+    cp "${SCRIPT_DIR}/.env.EXAMPLE" "${SCRIPT_DIR}/.env"
+    echo "Created .env from .env.EXAMPLE. Edit ports and COMPOSE_PROFILES before starting."
+  else
+    echo "Error: .env not found and .env.EXAMPLE is missing." >&2
+    exit 1
+  fi
+fi
+
 # create start_container.sh
 cat > start_container.sh << 'EOF'
 #!/bin/bash
 
+if [ "$EUID" -ne 0 ]; then
+  echo "Error: This script must be run as root (use sudo)" >&2
+  exit 1
+fi
+
 if ! docker ps > /dev/null 2>&1; then
   echo "Error: Current user does not have permission to use Docker" >&2
   echo "Please ensure you can run 'docker ps' successfully" >&2
-  echo "You may need to add your user to the docker group: sudo usermod -aG docker $USER" >&2
   exit 1
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
+
+ENV_FILE=./.env
+if [ ! -f "$ENV_FILE" ]; then
+  echo "Error: .env file not found. Copy .env.EXAMPLE to .env and configure." >&2
+  exit 1
+fi
+
+set -o allexport
+# shellcheck disable=SC1091
+source "$ENV_FILE"
+set +o allexport
+
+WEBUI_PORT="${WEBUI_PORT:-3060}"
+OLLAMA_PORT="${OLLAMA_PORT:-11434}"
+COMPOSE_PROFILES="${COMPOSE_PROFILES:-}"
+
+if [ -z "$COMPOSE_PROFILES" ]; then
+  echo "Error: COMPOSE_PROFILES is not set in .env" >&2
+  echo "Use ollama, open-webui, or ollama,open-webui" >&2
+  exit 1
+fi
 
 if ! docker exec wireguard-client ip link show wg0 >/dev/null 2>&1; then
   echo "Error: WireGuard tunnel is not up in container wireguard-client." >&2
@@ -41,7 +81,21 @@ if ! docker exec wireguard-client ip link show wg0 >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "Starting ollama and open-webui..."
+want_ollama=0
+want_webui=0
+case ",${COMPOSE_PROFILES}," in
+  *,ollama,*) want_ollama=1 ;;
+esac
+case ",${COMPOSE_PROFILES}," in
+  *,open-webui,*) want_webui=1 ;;
+esac
+
+if [ "$want_ollama" -eq 0 ] && [ "$want_webui" -eq 0 ]; then
+  echo "Error: COMPOSE_PROFILES must include ollama and/or open-webui" >&2
+  exit 1
+fi
+
+echo "Starting compose profiles: ${COMPOSE_PROFILES}"
 if ! docker compose -p self-hosted-llm up -d; then
   echo "Error: Failed to start containers." >&2
   exit 1
@@ -51,17 +105,21 @@ echo "Waiting for containers to be ready..."
 max_attempts=30
 attempt=0
 while [ $attempt -lt $max_attempts ]; do
-  ollama_up=0
-  webui_up=0
-  if docker ps --format '{{.Names}}' | grep -q '^ollama$'; then
-    ollama_up=1
+  ready=1
+  if [ "$want_ollama" -eq 1 ] && ! docker ps --format '{{.Names}}' | grep -q '^ollama$'; then
+    ready=0
   fi
-  if docker ps --format '{{.Names}}' | grep -q '^open-webui$'; then
-    webui_up=1
+  if [ "$want_webui" -eq 1 ] && ! docker ps --format '{{.Names}}' | grep -q '^open-webui$'; then
+    ready=0
   fi
-  if [ "$ollama_up" -eq 1 ] && [ "$webui_up" -eq 1 ]; then
-    echo "Containers ollama and open-webui are running."
-    echo "Open WebUI: http://10.0.2.3:3060"
+  if [ "$ready" -eq 1 ]; then
+    echo "Requested containers are running."
+    if [ "$want_webui" -eq 1 ]; then
+      echo "Open WebUI published on 0.0.0.0:${WEBUI_PORT}"
+    fi
+    if [ "$want_ollama" -eq 1 ]; then
+      echo "Ollama API published on 0.0.0.0:${OLLAMA_PORT}"
+    fi
     exit 0
   fi
   attempt=$((attempt + 1))
@@ -76,10 +134,14 @@ EOF
 cat > stop_container.sh << 'EOF'
 #!/bin/bash
 
+if [ "$EUID" -ne 0 ]; then
+  echo "Error: This script must be run as root (use sudo)" >&2
+  exit 1
+fi
+
 if ! docker ps > /dev/null 2>&1; then
   echo "Error: Current user does not have permission to use Docker" >&2
   echo "Please ensure you can run 'docker ps' successfully" >&2
-  echo "You may need to add your user to the docker group: sudo usermod -aG docker $USER" >&2
   exit 1
 fi
 
@@ -96,17 +158,18 @@ EOF
 cat > reset_container.sh << 'EOF'
 #!/bin/bash
 
-DOCKER_CMD="docker"
-if ! docker ps > /dev/null 2>&1; then
-  if sudo docker ps > /dev/null 2>&1; then
-    DOCKER_CMD="sudo docker"
-  else
-    echo "Error: Current user does not have permission to use Docker" >&2
-    echo "Please ensure you can run 'docker ps' or 'sudo docker ps' successfully" >&2
-    echo "You may need to add your user to the docker group: sudo usermod -aG docker $USER" >&2
-    exit 1
-  fi
+if [ "$EUID" -ne 0 ]; then
+  echo "Error: This script must be run as root (use sudo)" >&2
+  exit 1
 fi
+
+if ! docker ps > /dev/null 2>&1; then
+  echo "Error: Current user does not have permission to use Docker" >&2
+  echo "Please ensure you can run 'docker ps' successfully" >&2
+  exit 1
+fi
+
+DOCKER_CMD="docker"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -198,7 +261,6 @@ fi
 if ! docker ps > /dev/null 2>&1; then
   echo "Error: Current user does not have permission to use Docker" >&2
   echo "Please ensure you can run 'docker ps' successfully" >&2
-  echo "You may need to add your user to the docker group: sudo usermod -aG docker $USER" >&2
   exit 1
 fi
 
@@ -224,6 +286,11 @@ if [ ! -f "${SCRIPT_DIR}/docker-compose.yaml" ]; then
   exit 1
 fi
 
+if [ ! -f "${SCRIPT_DIR}/.env" ]; then
+  echo "Warning: .env file not found in ${SCRIPT_DIR}" >&2
+  echo "Copy .env.EXAMPLE to .env and configure before starting the service." >&2
+fi
+
 echo "Installing self-hosted LLM systemd service..."
 echo "Project directory: ${SCRIPT_DIR}"
 
@@ -241,6 +308,7 @@ Wants=wireguard-vpn.service
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=${SCRIPT_DIR}
+EnvironmentFile=-${SCRIPT_DIR}/.env
 ExecStart=${SCRIPT_DIR}/start_container.sh
 ExecStop=${SCRIPT_DIR}/stop_container.sh
 ExecReload=/bin/bash -c '${SCRIPT_DIR}/stop_container.sh && ${SCRIPT_DIR}/start_container.sh'
@@ -273,8 +341,8 @@ echo "To check service status:"
 echo "  sudo systemctl status ${SERVICE_NAME}"
 echo ""
 echo "To reset one service in this compose project:"
-echo "  ${SCRIPT_DIR}/reset_container.sh ollama"
-echo "  ${SCRIPT_DIR}/reset_container.sh open-webui"
+echo "  sudo ${SCRIPT_DIR}/reset_container.sh ollama"
+echo "  sudo ${SCRIPT_DIR}/reset_container.sh open-webui"
 echo ""
 echo "Note: The reset command is not integrated into systemd as it is destructive."
 echo "      Run it manually when needed."
@@ -283,16 +351,12 @@ EOF
 chmod +x start_container.sh stop_container.sh reset_container.sh install_service.sh
 
 echo "Scripts ready:"
-echo "  ./start_container.sh     - Start ollama and open-webui"
-echo "  ./stop_container.sh      - Stop ollama and open-webui"
-echo "  ./reset_container.sh <ollama|open-webui> - Reset one service in this compose project"
-echo "  sudo ./install_service.sh - Install the systemd service"
+echo "  sudo ./start_container.sh     - Start ollama and open-webui"
+echo "  sudo ./stop_container.sh      - Stop ollama and open-webui"
+echo "  sudo ./reset_container.sh <ollama|open-webui> - Reset one service in this compose project"
+echo "  sudo ./install_service.sh     - Install the systemd service"
 
-if [ "$EUID" -ne 0 ]; then
-  sudo ./install_service.sh
-else
-  ./install_service.sh
-fi
+./install_service.sh
 
 echo ""
 echo "Installation complete!"
