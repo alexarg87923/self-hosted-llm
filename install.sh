@@ -86,16 +86,8 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-echo "Stopping ollama and open-webui..."
+echo "Stopping self-hosted-llm compose project..."
 docker compose -p self-hosted-llm down --remove-orphans || true
-
-for name in ollama open-webui; do
-  if docker ps --format '{{.Names}}' | grep -q "^${name}$"; then
-    echo "Container ${name} still running, stopping directly..."
-    docker stop "${name}" 2>/dev/null || true
-    docker rm "${name}" 2>/dev/null || true
-  fi
-done
 
 echo "Containers stopped."
 EOF
@@ -119,25 +111,75 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-echo "Resetting ollama and open-webui..."
+COMPOSE_PROJECT="self-hosted-llm"
+TARGET="${1:-}"
 
-echo "Checking if stop_container.sh exists..."
-if [ -f "./stop_container.sh" ]; then
-  echo "Executing stop_container.sh..."
-  ./stop_container.sh || true
+usage() {
+  echo "Usage: $0 <ollama|open-webui>" >&2
+  echo "  ollama       Reset only the ollama service" >&2
+  echo "  open-webui   Reset only the open-webui service" >&2
+  exit 1
+}
+
+case "$TARGET" in
+  ollama|open-webui) ;;
+  -h|--help|"") usage ;;
+  *)
+    echo "Error: unknown target '${TARGET}'" >&2
+    usage
+    ;;
+esac
+
+belongs_to_project() {
+  local kind="$1"
+  local name="$2"
+  local project=""
+  case "$kind" in
+    container)
+      project=$(${DOCKER_CMD} inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$name" 2>/dev/null || true)
+      ;;
+    volume)
+      project=$(${DOCKER_CMD} volume inspect -f '{{index .Labels "com.docker.compose.project"}}' "$name" 2>/dev/null || true)
+      ;;
+  esac
+  [ "$project" = "$COMPOSE_PROJECT" ]
+}
+
+remove_if_project_container() {
+  local name="$1"
+  if ${DOCKER_CMD} inspect "$name" >/dev/null 2>&1 && belongs_to_project container "$name"; then
+    echo "Removing leftover container ${name}..."
+    ${DOCKER_CMD} rm -f "$name" 2>/dev/null || true
+  fi
+}
+
+remove_if_project_volume() {
+  local name="$1"
+  if ${DOCKER_CMD} volume inspect "$name" >/dev/null 2>&1 && belongs_to_project volume "$name"; then
+    echo "Removing leftover volume ${name}..."
+    ${DOCKER_CMD} volume rm "$name" 2>/dev/null || true
+  fi
+}
+
+reset_service() {
+  local service="$1"
+  local volume="$2"
+  local image="$3"
+
+  echo "Resetting ${COMPOSE_PROJECT} service ${service} only..."
+  ${DOCKER_CMD} compose -p "${COMPOSE_PROJECT}" stop "$service" || true
+  ${DOCKER_CMD} compose -p "${COMPOSE_PROJECT}" rm -f -v "$service" || true
+  remove_if_project_container "$service"
+  remove_if_project_volume "$volume"
+  echo "Removing image ${image}..."
+  ${DOCKER_CMD} rmi -f "$image" 2>/dev/null || true
+}
+
+if [ "$TARGET" = "ollama" ]; then
+  reset_service ollama ollama_data ollama/ollama:rocm
+else
+  reset_service open-webui open-webui_data ghcr.io/open-webui/open-webui:main
 fi
-
-echo "Removing named containers..."
-${DOCKER_CMD} rm -f ollama open-webui 2>/dev/null || true
-
-echo "Removing named volumes..."
-${DOCKER_CMD} volume rm ollama_data open-webui_data 2>/dev/null || true
-
-echo "Removing named network..."
-${DOCKER_CMD} network rm self-hosted-llm 2>/dev/null || true
-
-echo "Removing project images..."
-${DOCKER_CMD} rmi -f ollama/ollama:rocm ghcr.io/open-webui/open-webui:main 2>/dev/null || true
 
 echo "Reset complete."
 EOF
@@ -230,8 +272,9 @@ echo ""
 echo "To check service status:"
 echo "  sudo systemctl status ${SERVICE_NAME}"
 echo ""
-echo "To reset named ollama/open-webui resources:"
-echo "  ${SCRIPT_DIR}/reset_container.sh"
+echo "To reset one service in this compose project:"
+echo "  ${SCRIPT_DIR}/reset_container.sh ollama"
+echo "  ${SCRIPT_DIR}/reset_container.sh open-webui"
 echo ""
 echo "Note: The reset command is not integrated into systemd as it is destructive."
 echo "      Run it manually when needed."
@@ -242,7 +285,7 @@ chmod +x start_container.sh stop_container.sh reset_container.sh install_service
 echo "Scripts ready:"
 echo "  ./start_container.sh     - Start ollama and open-webui"
 echo "  ./stop_container.sh      - Stop ollama and open-webui"
-echo "  ./reset_container.sh     - Delete named ollama/open-webui containers, volumes, and images"
+echo "  ./reset_container.sh <ollama|open-webui> - Reset one service in this compose project"
 echo "  sudo ./install_service.sh - Install the systemd service"
 
 if [ "$EUID" -ne 0 ]; then
