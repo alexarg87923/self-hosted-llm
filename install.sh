@@ -75,12 +75,6 @@ if [ -z "$COMPOSE_PROFILES" ]; then
   exit 1
 fi
 
-if ! docker exec wireguard-client ip link show wg0 >/dev/null 2>&1; then
-  echo "Error: WireGuard tunnel is not up in container wireguard-client." >&2
-  echo "Start the VPN first: sudo systemctl start wireguard-vpn" >&2
-  exit 1
-fi
-
 want_ollama=0
 want_webui=0
 case ",${COMPOSE_PROFILES}," in
@@ -289,6 +283,11 @@ fi
 if [ ! -f "${SCRIPT_DIR}/.env" ]; then
   echo "Warning: .env file not found in ${SCRIPT_DIR}" >&2
   echo "Copy .env.EXAMPLE to .env and configure before starting the service." >&2
+else
+  set -o allexport
+  # shellcheck disable=SC1091
+  source "${SCRIPT_DIR}/.env"
+  set +o allexport
 fi
 
 echo "Installing self-hosted LLM systemd service..."
@@ -297,12 +296,22 @@ echo "Project directory: ${SCRIPT_DIR}"
 SERVICE_NAME="self-hosted-llm"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 
+AFTER_LINE="After=docker.service"
+WANTS_LINE=""
+if [ "${WAIT_FOR_WIREGUARD:-true}" != "false" ] && [ "${WAIT_FOR_WIREGUARD:-true}" != "0" ]; then
+  AFTER_LINE="After=docker.service wireguard-vpn.service"
+  WANTS_LINE="Wants=wireguard-vpn.service"
+  echo "WAIT_FOR_WIREGUARD is on: unit will wait for wireguard-vpn.service"
+else
+  echo "WAIT_FOR_WIREGUARD is off: unit will not wait for wireguard-vpn.service"
+fi
+
 cat > "${SERVICE_FILE}" << SERVICE_EOF
 [Unit]
 Description=Self-hosted Ollama and Open WebUI
-After=docker.service wireguard-vpn.service
+${AFTER_LINE}
 Requires=docker.service
-Wants=wireguard-vpn.service
+${WANTS_LINE}
 
 [Service]
 Type=oneshot
