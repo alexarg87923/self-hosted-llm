@@ -12,6 +12,7 @@ services:
       - HSA_OVERRIDE_GFX_VERSION=10.3.0
       - OLLAMA_MAX_LOADED_MODELS=1
       - OLLAMA_KEEP_ALIVE=30m
+      - OLLAMA_LOAD_TIMEOUT=30m
     devices:
       - /dev/kfd:/dev/kfd
       - /dev/dri:/dev/dri
