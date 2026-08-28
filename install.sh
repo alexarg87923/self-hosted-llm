@@ -188,54 +188,36 @@ case "$TARGET" in
 esac
 
 belongs_to_project() {
-  local kind="$1"
-  local name="$2"
-  local project=""
-  case "$kind" in
-    container)
-      project=$(${DOCKER_CMD} inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$name" 2>/dev/null || true)
-      ;;
-    volume)
-      project=$(${DOCKER_CMD} volume inspect -f '{{index .Labels "com.docker.compose.project"}}' "$name" 2>/dev/null || true)
-      ;;
-  esac
+  local name="$1"
+  local project
+  project=$(${DOCKER_CMD} inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$name" 2>/dev/null || true)
   [ "$project" = "$COMPOSE_PROJECT" ]
 }
 
 remove_if_project_container() {
   local name="$1"
-  if ${DOCKER_CMD} inspect "$name" >/dev/null 2>&1 && belongs_to_project container "$name"; then
+  if ${DOCKER_CMD} inspect "$name" >/dev/null 2>&1 && belongs_to_project "$name"; then
     echo "Removing leftover container ${name}..."
     ${DOCKER_CMD} rm -f "$name" 2>/dev/null || true
   fi
 }
 
-remove_if_project_volume() {
-  local name="$1"
-  if ${DOCKER_CMD} volume inspect "$name" >/dev/null 2>&1 && belongs_to_project volume "$name"; then
-    echo "Removing leftover volume ${name}..."
-    ${DOCKER_CMD} volume rm "$name" 2>/dev/null || true
-  fi
-}
-
 reset_service() {
   local service="$1"
-  local volume="$2"
-  local image="$3"
+  local image="$2"
 
   echo "Resetting ${COMPOSE_PROJECT} service ${service} only..."
   ${DOCKER_CMD} compose -p "${COMPOSE_PROJECT}" stop "$service" || true
-  ${DOCKER_CMD} compose -p "${COMPOSE_PROJECT}" rm -f -v "$service" || true
+  ${DOCKER_CMD} compose -p "${COMPOSE_PROJECT}" rm -f "$service" || true
   remove_if_project_container "$service"
-  remove_if_project_volume "$volume"
   echo "Removing image ${image}..."
   ${DOCKER_CMD} rmi -f "$image" 2>/dev/null || true
 }
 
 if [ "$TARGET" = "ollama" ]; then
-  reset_service ollama ollama_data ollama/ollama:rocm
+  reset_service ollama ollama/ollama:rocm
 else
-  reset_service open-webui open-webui_data ghcr.io/open-webui/open-webui:main
+  reset_service open-webui ghcr.io/open-webui/open-webui:main
 fi
 
 echo "Reset complete."
