@@ -10,7 +10,7 @@ services:
       - "0.0.0.0:${OLLAMA_PORT:-11434}:11434"
     environment:
       - HSA_OVERRIDE_GFX_VERSION=10.3.0
-      - OLLAMA_MAX_LOADED_MODELS=3
+      - OLLAMA_MAX_LOADED_MODELS=1
       - OLLAMA_KEEP_ALIVE=30m
     devices:
       - /dev/kfd:/dev/kfd
