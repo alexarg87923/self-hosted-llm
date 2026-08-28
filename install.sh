@@ -290,6 +290,96 @@ else
   set +o allexport
 fi
 
+CADDY_DIR="/etc/caddy"
+CADDYFILE="${CADDY_DIR}/Caddyfile"
+CADDY_CONF_D="${CADDY_DIR}/conf.d"
+CADDY_SITE_NAME="self-hosted-llm.caddy"
+CADDY_TEMPLATE_FILE="${SCRIPT_DIR}/${CADDY_SITE_NAME}"
+CADDY_SITE_FILE="${CADDY_CONF_D}/${CADDY_SITE_NAME}"
+CADDY_IMPORT="import /etc/caddy/conf.d/*"
+
+caddyfile_is_import_only() {
+  local stripped
+  stripped="$(grep -vE '^[[:space:]]*(#|$)' "$CADDYFILE" 2>/dev/null || true)"
+  [ "$stripped" = "$CADDY_IMPORT" ]
+}
+
+install_caddy_dropin() {
+  if [ -z "${DOMAIN:-}" ]; then
+    echo "DOMAIN is empty: skipping Caddy site config"
+    return 0
+  fi
+
+  if [ ! -f "$CADDY_TEMPLATE_FILE" ]; then
+    echo "Error: ${CADDY_TEMPLATE_FILE} not found" >&2
+    exit 1
+  fi
+
+  if [ ! -d "$CADDY_DIR" ]; then
+    echo "Error: ${CADDY_DIR} not found. Install Caddy before setting DOMAIN." >&2
+    exit 1
+  fi
+
+  if ! command -v caddy >/dev/null 2>&1; then
+    echo "Error: caddy is not in PATH" >&2
+    exit 1
+  fi
+
+  local domain="$DOMAIN"
+  domain="${domain#http://}"
+  domain="${domain#https://}"
+  domain="${domain%/}"
+  if [ -z "$domain" ]; then
+    echo "Error: DOMAIN is empty after removing scheme/trailing slash" >&2
+    exit 1
+  fi
+
+  local webui_port="${WEBUI_PORT:-3060}"
+
+  echo "Installing Caddy drop-in for ${domain} -> 127.0.0.1:${webui_port}"
+
+  mkdir -p "$CADDY_CONF_D"
+
+  if [ -f "$CADDYFILE" ] && caddyfile_is_import_only; then
+    echo "Caddyfile already imports ${CADDY_CONF_D}"
+  else
+    if [ -f "$CADDYFILE" ]; then
+      local backup="${CADDYFILE}.bak.$(date +%Y%m%d%H%M%S)"
+      cp -a "$CADDYFILE" "$backup"
+      echo "Backed up ${CADDYFILE} to ${backup}"
+    fi
+    printf '%s\n' "$CADDY_IMPORT" > "$CADDYFILE"
+    echo "Wrote ${CADDYFILE} with: ${CADDY_IMPORT}"
+  fi
+
+  local line
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line//\$\{DOMAIN\}/${domain}}"
+    line="${line//\$\{WEBUI_PORT\}/${webui_port}}"
+    printf '%s\n' "$line"
+  done < "$CADDY_TEMPLATE_FILE" > "$CADDY_SITE_FILE"
+
+  if getent group caddy >/dev/null 2>&1; then
+    chown root:caddy "$CADDYFILE" "$CADDY_CONF_D" "$CADDY_SITE_FILE"
+  fi
+  chmod 644 "$CADDYFILE" "$CADDY_SITE_FILE"
+  chmod 755 "$CADDY_CONF_D"
+
+  echo "Wrote ${CADDY_SITE_FILE}"
+
+  if ! caddy validate --config "$CADDYFILE"; then
+    echo "Error: Caddy config validation failed" >&2
+    exit 1
+  fi
+
+  if systemctl is-active --quiet caddy; then
+    systemctl reload caddy
+    echo "Reloaded caddy"
+  else
+    echo "Caddy is not running. Start it with: sudo systemctl start caddy"
+  fi
+}
+
 echo "Installing self-hosted LLM systemd service..."
 echo "Project directory: ${SCRIPT_DIR}"
 
@@ -342,6 +432,8 @@ echo "Service file created: ${SERVICE_FILE}"
 systemctl daemon-reload
 systemctl enable "${SERVICE_NAME}.service"
 
+install_caddy_dropin
+
 echo ""
 echo "Service installed successfully!"
 echo ""
@@ -363,6 +455,9 @@ echo "  sudo ${SCRIPT_DIR}/reset_container.sh open-webui"
 echo ""
 echo "Note: The reset command is not integrated into systemd as it is destructive."
 echo "      Run it manually when needed."
+echo ""
+echo "Caddy site file (when DOMAIN is set): ${CADDY_SITE_FILE}"
+echo "Re-run this script after changing DOMAIN or WEBUI_PORT."
 EOF
 
 chmod +x start_container.sh stop_container.sh reset_container.sh install_service.sh
@@ -371,12 +466,7 @@ echo "Scripts ready:"
 echo "  sudo ./start_container.sh     - Start ollama and open-webui"
 echo "  sudo ./stop_container.sh      - Stop ollama and open-webui"
 echo "  sudo ./reset_container.sh <ollama|open-webui> - Reset one service in this compose project"
-echo "  sudo ./install_service.sh     - Install the systemd service"
-
-./install_service.sh
-
-echo ""
-echo "Installation complete!"
+echo "  sudo ./install_service.sh     - Install the systemd service and Caddy drop-in"
 
 # self destruct to remove attack vectors
 rm -- "$0"

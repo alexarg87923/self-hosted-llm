@@ -1,0 +1,16 @@
+${DOMAIN} {
+    @immutable path /_app/immutable/*
+    header @immutable Cache-Control "public, max-age=31536000, immutable"
+
+    @static path /static/* /assets/* *.woff2 *.woff *.png *.svg *.ico *.webp
+    header @static Cache-Control "public, max-age=604800"
+
+    reverse_proxy 127.0.0.1:${WEBUI_PORT} {
+        header_up X-Real-IP {remote_host}
+        transport http {
+            keepalive 3s
+            dial_timeout 5s
+        }
+        flush_interval -1
+    }
+}
